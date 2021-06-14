@@ -345,7 +345,7 @@ The below code will help you set up this Secret.
 pgo_cluster_name=hippo
 # this variable is the namespace the cluster is being deployed into
 cluster_namespace=pgo
-# the following variables are your S3 key and key secret
+# this variable is your GCS credential
 backrest_gcs_key=/path/to/your/gcs/credential.json
 
 kubectl -n "${cluster_namespace}" create secret generic "${pgo_cluster_name}-backrest-repo-config" \
@@ -464,7 +464,7 @@ There are two Secrets that need to be created:
 1. A Secret containing the certificate authority (CA). You may only need to create this Secret once, as a CA certificate can be shared amongst your clusters.
 2. A Secret that contains the TLS private key & certificate.
 
-This assumes that you have already [generated your TLS certificates](https://www.postgresql.org/docs/current/ssl-tcp.html#SSL-CERTIFICATE-CREATION) where the CA is named `ca.crt` and the server key and certificate are named `server.key` and `server.crt` respectively.
+This assumes that you have already [generated your TLS certificates](https://blog.crunchydata.com/blog/tls-postgres-kubernetes-openssl) where the CA is named `ca.crt` and the server key and certificate are named `server.key` and `server.crt` respectively.
 
 Substitute the correct values for your environment into the environmental variables in the example below:
 
@@ -574,7 +574,7 @@ There following modification operations are supported on the
 
 #### Modify Resource Requests & Limits
 
-Modifying the `resources`, `limits`, `backrestResources`, `backRestLimits`,
+Modifying the `resources`, `limits`, `backrestResources`, `backrestLimits`,
 `pgBouncer.resources`, or `pgbouncer.limits` will cause the PostgreSQL Operator
 to apply the new values to the affected [Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/).
 
@@ -854,6 +854,34 @@ spec:
 Save your edits, and in a short period of time, you should see these annotations
 applied to the managed Deployments.
 
+### Manage Custom Labels
+
+Several Kubernetes [Labels](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/)
+are automatically applied by PGO to its managed objects. However, it is possible
+to apply your own custom labels to the objects that PGO manages for a Postgres
+cluster. These objects include:
+
+- ConfigMaps
+- Deployments
+- Jobs
+- Pods
+- PVCs
+- Secrets
+- Services
+
+The custom labels can be managed through the `userlabels` attribute on the
+`pgclusters.crunchydata.com` custom resource spec.
+
+For example, if I want to add a custom label to all of the objects within my
+Postgres cluster with a key of `favorite` and a value of `hippo`, you would
+apply the following to the spec:
+
+```
+spec:
+  userlabels:
+    favorite: hippo
+```
+
 ### Delete a PostgreSQL Cluster
 
 A PostgreSQL cluster can be deleted by simply deleting the `pgclusters.crunchydata.com` resource.
@@ -909,7 +937,7 @@ make changes, as described below.
 | backrestConfig | `create` | Optional references to pgBackRest configuration files |
 | backrestLimits | `create`, `update` | Specify the container resource limits that the pgBackRest repository should use. Follows the [Kubernetes definitions of resource limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#resource-requests-and-limits-of-pod-and-container). |
 | backrestRepoPath | `create` | Optional reference to the location of the pgBackRest repository. |
-| BackrestResources | `create`, `update` | Specify the container resource requests that the pgBackRest repository should use. Follows the [Kubernetes definitions of resource requests](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#resource-requests-and-limits-of-pod-and-container). |
+| backrestResources | `create`, `update` | Specify the container resource requests that the pgBackRest repository should use. Follows the [Kubernetes definitions of resource requests](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#resource-requests-and-limits-of-pod-and-container). |
 | backrestGCSBucket | `create` | An optional parameter (unless you are using GCS for backup storage) that specifies the GCS bucket that pgBackRest should use. |
 | backrestGCSEndpoint | `create` | An optional parameter that specifies a GCS endpoint pgBackRest should use, if not using the default GCS endpoint. |
 | backrestGCSKeyType | `create` | An optional parameter that specifies a GCS key type that pgBackRest should use. Can be either `service` or `token`, and if not specified, pgBackRest will use `service`. |
@@ -954,7 +982,7 @@ make changes, as described below.
 | tlsOnly | `create`,`update` | If set to true, requires client connections to use only TLS to connect to the PostgreSQL database. |
 | tolerations | `create`,`update` | Any array of Kubernetes [Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/). Please refer to the [Kubernetes documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) for how to set this field. |
 | user | `create` | The name of the PostgreSQL user that is created when the PostgreSQL cluster is first created. |
-| userlabels | `create` | A set of key-value string pairs that are used as a sort of "catch-all" as well as a way to add custom labels to clusters. This will disappear at some point. |
+| userlabels | `create`,`update` | A set of key-value string pairs that are used as a sort of "catch-all" as well as a way to add custom labels to clusters. |
 
 ##### Storage Specification
 

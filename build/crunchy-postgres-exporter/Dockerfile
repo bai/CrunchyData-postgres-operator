@@ -36,16 +36,18 @@ fi
 
 RUN if [ "$BASEOS" = "ubi8" ] ; then \
 	${PACKAGER} install -y \
-        postgresql${PGVERSION} \
+		findutils \
 		gettext \
 		nss_wrapper \
+		postgresql${PGVERSION} \
     && ${PACKAGER} -y clean all ; \
 fi
 
 RUN mkdir -p /opt/cpm/bin /opt/cpm/conf
 
 ADD postgres_exporter.tar.gz /opt/cpm/bin
-ADD tools/pgmonitor/exporter/postgres /opt/cpm/conf
+ADD tools/pgmonitor/postgres_exporter/common /opt/cpm/conf
+ADD tools/pgmonitor/postgres_exporter/linux /opt/cpm/conf
 ADD bin/crunchy-postgres-exporter /opt/cpm/bin
 ADD bin/common /opt/cpm/bin
 

@@ -218,8 +218,7 @@ func (c *Controller) onUpdate(oldObj, newObj interface{}) {
 		// take the inverse, as this func checks for autofail being enabled
 		// if we can't toggle autofailover, log the error but continue on
 		if err := util.ToggleAutoFailover(c.Client, !newcluster.Spec.DisableAutofail,
-			newcluster.ObjectMeta.Labels[config.LABEL_PGHA_SCOPE],
-			newcluster.ObjectMeta.Namespace); err != nil {
+			newcluster.Name, newcluster.Namespace); err != nil {
 			log.Error(err)
 		}
 	}
@@ -353,6 +352,19 @@ func (c *Controller) onUpdate(oldObj, newObj interface{}) {
 			// append the PostgreSQL specific functions as part of a rolling update
 			rollingUpdateFuncs = append(rollingUpdateFuncs, clusteroperator.UpdateAnnotations)
 		}
+	}
+
+	// check to see if any of the custom labels have been modified
+	if !reflect.DeepEqual(util.GetCustomLabels(oldcluster), util.GetCustomLabels(newcluster)) {
+		// update the custom labels on all of the managed objects at are not the
+		// Postgres cluster deployments
+		if err := updateLabels(c, oldcluster, newcluster); err != nil {
+			log.Error(err)
+			return
+		}
+
+		// append the PostgreSQL specific functions as part of a rolling update
+		rollingUpdateFuncs = append(rollingUpdateFuncs, clusteroperator.UpdateLabels)
 	}
 
 	// check to see if any tolerations have been modified
@@ -640,6 +652,237 @@ func updateBackrestS3(c *Controller, cluster *crv1.Pgcluster) error {
 	return nil
 }
 
+// updateLabels updates the custom labels on all of the managed objects *except*
+// the Postgres instances themselves, i.e. the deployment templates
+func updateLabels(c *Controller, oldCluster *crv1.Pgcluster, newCluster *crv1.Pgcluster) error {
+	// we need to figure out which labels need to be removed from the list
+	labelsToRemove := make([]string, 0)
+	labels := util.GetCustomLabels(newCluster)
+
+	for old := range util.GetCustomLabels(oldCluster) {
+		if _, ok := labels[old]; !ok {
+			labelsToRemove = append(labelsToRemove, old)
+		}
+	}
+
+	// go through each object group and update the labels.
+	if err := updateLabelsForDeployments(c, newCluster, labels, labelsToRemove); err != nil {
+		return err
+	}
+
+	if err := updateLabelsForPVCs(c, newCluster, labels, labelsToRemove); err != nil {
+		return err
+	}
+
+	if err := updateLabelsForConfigMaps(c, newCluster, labels, labelsToRemove); err != nil {
+		return err
+	}
+
+	if err := updateLabelsForSecrets(c, newCluster, labels, labelsToRemove); err != nil {
+		return err
+	}
+
+	return updateLabelsForServices(c, newCluster, labels, labelsToRemove)
+}
+
+// updateLabelsForConfigMaps updates the custom labels for ConfigMaps
+func updateLabelsForConfigMaps(c *Controller, cluster *crv1.Pgcluster, labels map[string]string, labelsToRemove []string) error {
+	ctx := context.TODO()
+
+	options := metav1.ListOptions{
+		LabelSelector: fields.AndSelectors(
+			fields.OneTermEqualSelector(config.LABEL_PG_CLUSTER, cluster.Name),
+			fields.OneTermEqualSelector(config.LABEL_VENDOR, config.LABEL_CRUNCHY),
+		).String(),
+	}
+
+	items, err := c.Client.CoreV1().ConfigMaps(cluster.Namespace).List(ctx, options)
+
+	if err != nil {
+		return err
+	}
+
+	for i := range items.Items {
+		item := &items.Items[i]
+
+		for j := range labelsToRemove {
+			delete(item.ObjectMeta.Labels, labelsToRemove[j])
+		}
+
+		for k, v := range labels {
+			item.ObjectMeta.Labels[k] = v
+		}
+
+		if _, err := c.Client.CoreV1().ConfigMaps(cluster.Namespace).Update(ctx,
+			item, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// updateLabelsForDeployments updates the custom labels for Deployments, except
+// for the **templates** on the Postgres instances
+func updateLabelsForDeployments(c *Controller, cluster *crv1.Pgcluster, labels map[string]string, labelsToRemove []string) error {
+	ctx := context.TODO()
+
+	options := metav1.ListOptions{
+		LabelSelector: fields.AndSelectors(
+			fields.OneTermEqualSelector(config.LABEL_PG_CLUSTER, cluster.Name),
+			fields.OneTermEqualSelector(config.LABEL_VENDOR, config.LABEL_CRUNCHY),
+		).String(),
+	}
+
+	items, err := c.Client.AppsV1().Deployments(cluster.Namespace).List(ctx, options)
+
+	if err != nil {
+		return err
+	}
+
+	for i := range items.Items {
+		item := &items.Items[i]
+
+		for j := range labelsToRemove {
+			delete(item.ObjectMeta.Labels, labelsToRemove[j])
+
+			// only remove the labels on the template if this is not a Postgres
+			// instance
+			if _, ok := item.ObjectMeta.Labels[config.LABEL_PG_DATABASE]; !ok {
+				delete(item.Spec.Template.ObjectMeta.Labels, labelsToRemove[j])
+			}
+		}
+
+		for k, v := range labels {
+			item.ObjectMeta.Labels[k] = v
+
+			// only update the labels on the template if this is not a Postgres
+			// instance
+			if _, ok := item.ObjectMeta.Labels[config.LABEL_PG_DATABASE]; !ok {
+				item.Spec.Template.ObjectMeta.Labels[k] = v
+			}
+		}
+
+		if _, err := c.Client.AppsV1().Deployments(cluster.Namespace).Update(ctx,
+			item, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// updateLabelsForPVCs updates the custom labels for PVCs
+func updateLabelsForPVCs(c *Controller, cluster *crv1.Pgcluster, labels map[string]string, labelsToRemove []string) error {
+	ctx := context.TODO()
+
+	options := metav1.ListOptions{
+		LabelSelector: fields.AndSelectors(
+			fields.OneTermEqualSelector(config.LABEL_PG_CLUSTER, cluster.Name),
+			fields.OneTermEqualSelector(config.LABEL_VENDOR, config.LABEL_CRUNCHY),
+		).String(),
+	}
+
+	items, err := c.Client.CoreV1().PersistentVolumeClaims(cluster.Namespace).List(ctx, options)
+
+	if err != nil {
+		return err
+	}
+
+	for i := range items.Items {
+		item := &items.Items[i]
+
+		for j := range labelsToRemove {
+			delete(item.ObjectMeta.Labels, labelsToRemove[j])
+		}
+
+		for k, v := range labels {
+			item.ObjectMeta.Labels[k] = v
+		}
+
+		if _, err := c.Client.CoreV1().PersistentVolumeClaims(cluster.Namespace).Update(ctx,
+			item, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// updateLabelsForSecrets updates the custom labels for Secrets
+func updateLabelsForSecrets(c *Controller, cluster *crv1.Pgcluster, labels map[string]string, labelsToRemove []string) error {
+	ctx := context.TODO()
+
+	options := metav1.ListOptions{
+		LabelSelector: fields.AndSelectors(
+			fields.OneTermEqualSelector(config.LABEL_PG_CLUSTER, cluster.Name),
+			fields.OneTermEqualSelector(config.LABEL_VENDOR, config.LABEL_CRUNCHY),
+		).String(),
+	}
+
+	items, err := c.Client.CoreV1().Secrets(cluster.Namespace).List(ctx, options)
+
+	if err != nil {
+		return err
+	}
+
+	for i := range items.Items {
+		item := &items.Items[i]
+
+		for j := range labelsToRemove {
+			delete(item.ObjectMeta.Labels, labelsToRemove[j])
+		}
+
+		for k, v := range labels {
+			item.ObjectMeta.Labels[k] = v
+		}
+
+		if _, err := c.Client.CoreV1().Secrets(cluster.Namespace).Update(ctx,
+			item, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// updateLabelsForServices updates the custom labels for Services
+func updateLabelsForServices(c *Controller, cluster *crv1.Pgcluster, labels map[string]string, labelsToRemove []string) error {
+	ctx := context.TODO()
+
+	options := metav1.ListOptions{
+		LabelSelector: fields.AndSelectors(
+			fields.OneTermEqualSelector(config.LABEL_PG_CLUSTER, cluster.Name),
+			fields.OneTermEqualSelector(config.LABEL_VENDOR, config.LABEL_CRUNCHY),
+		).String(),
+	}
+
+	items, err := c.Client.CoreV1().Services(cluster.Namespace).List(ctx, options)
+
+	if err != nil {
+		return err
+	}
+
+	for i := range items.Items {
+		item := &items.Items[i]
+
+		for j := range labelsToRemove {
+			delete(item.ObjectMeta.Labels, labelsToRemove[j])
+		}
+
+		for k, v := range labels {
+			item.ObjectMeta.Labels[k] = v
+		}
+
+		if _, err := c.Client.CoreV1().Services(cluster.Namespace).Update(ctx,
+			item, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // updatePgBouncer updates the pgBouncer Deployment to reflect any changes that
 // may be made, which include:
 // - enabling a pgBouncer Deployment :)
@@ -757,7 +1000,7 @@ func updateTablespaces(c *Controller, oldCluster *crv1.Pgcluster, newCluster *cr
 			// potentially leaves things in an inconsistent state, but at this point
 			// only PVC objects have been created
 			if _, err := pvc.CreateIfNotExists(c.Client, storageSpec, tablespacePVCName,
-				newCluster.Name, newCluster.Namespace); err != nil {
+				newCluster.Name, newCluster.Namespace, util.GetCustomLabels(newCluster)); err != nil {
 				return err
 			}
 		}

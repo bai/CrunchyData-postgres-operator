@@ -868,6 +868,7 @@ func CreateCluster(request *msgs.CreateClusterRequest, ns, pgouser string) msgs.
 
 	// Create an instance of our CRD
 	newInstance := getClusterParams(request, clusterName, ns)
+	newInstance.ObjectMeta.Labels[config.LABEL_PG_CLUSTER] = clusterName
 	newInstance.ObjectMeta.Labels[config.LABEL_PGOUSER] = pgouser
 	newInstance.Spec.BackrestStorageTypes = backrestStorageTypes
 
@@ -992,6 +993,10 @@ func CreateCluster(request *msgs.CreateClusterRequest, ns, pgouser string) msgs.
 				util.BackRestRepoSecretKeyAWSS3KeyAWSS3KeySecret: []byte(request.BackrestS3KeySecret),
 				util.BackRestRepoSecretKeyAWSS3KeyGCSKey:         backrestGCSKey,
 			},
+		}
+
+		for k, v := range util.GetCustomLabels(newInstance) {
+			secret.ObjectMeta.Labels[k] = v
 		}
 
 		if _, err := apiserver.Clientset.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{}); err != nil && !kubeapi.IsAlreadyExists(err) {
@@ -1772,7 +1777,7 @@ func createUserSecret(request *msgs.CreateClusterRequest, cluster *crv1.Pgcluste
 
 	// great, now we can create the secret! if we can't, return an error
 	if err := util.CreateSecret(apiserver.Clientset, cluster.Spec.Name, secretName,
-		username, password, cluster.Namespace); err != nil {
+		username, password, cluster.Namespace, util.GetCustomLabels(cluster)); err != nil {
 		return "", err
 	}
 

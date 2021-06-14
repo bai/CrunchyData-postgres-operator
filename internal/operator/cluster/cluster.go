@@ -54,6 +54,7 @@ type ServiceTemplateFields struct {
 	Name         string
 	ServiceName  string
 	ClusterName  string
+	CustomLabels string
 	Port         string
 	PGBadgerPort string
 	ExporterPort string
@@ -69,11 +70,22 @@ const (
 
 	// pgBadgerContainerName is the name of the pgBadger container
 	pgBadgerContainerName = "pgbadger"
-
-	// BoostrapConfigPrefix is the format of the prefix used for the Secret containing the
-	// pgBackRest configuration required to bootstrap a new cluster using a pgBackRest backup
-	BoostrapConfigPrefix = "%s-bootstrap-%s"
 )
+
+// systemLabels is a list of the system labels that need to be copied over when
+// also applying the custom labels
+var systemLabels = []string{
+	config.LABEL_PGHA_SCOPE,
+	config.LABEL_DEPLOYMENT_NAME,
+	config.LABEL_NAME,
+	config.LABEL_PG_CLUSTER,
+	config.LABEL_POD_ANTI_AFFINITY,
+	config.LABEL_PG_DATABASE,
+	config.LABEL_PGO_VERSION,
+	config.LABEL_PGOUSER,
+	config.LABEL_VENDOR,
+	config.LABEL_WORKFLOW_ID,
+}
 
 // a group of constants that are used as part of the TLS support
 const (
@@ -535,7 +547,7 @@ func ScaleBase(clientset kubeapi.Interface, replica *crv1.Pgreplica, namespace s
 		clientset, cluster, namespace, replica.Spec.Name, replica.Spec.ReplicaStorage)
 	if err != nil {
 		log.Error(err)
-		publishScaleError(namespace, replica.ObjectMeta.Labels[config.LABEL_PGOUSER], cluster)
+		publishScaleError(namespace, replica.ObjectMeta.Labels[config.LABEL_PGOUSER], cluster, replica)
 		return
 	}
 
@@ -553,13 +565,13 @@ func ScaleBase(clientset kubeapi.Interface, replica *crv1.Pgreplica, namespace s
 	// create the replica service if it doesnt exist
 	if err = scaleReplicaCreateMissingService(clientset, replica, cluster, namespace); err != nil {
 		log.Error(err)
-		publishScaleError(namespace, replica.ObjectMeta.Labels[config.LABEL_PGOUSER], cluster)
+		publishScaleError(namespace, replica.ObjectMeta.Labels[config.LABEL_PGOUSER], cluster, replica)
 		return
 	}
 
 	// instantiate the replica
 	if err = scaleReplicaCreateDeployment(clientset, replica, cluster, namespace, dataVolume, walVolume, tablespaceVolumes); err != nil {
-		publishScaleError(namespace, replica.ObjectMeta.Labels[config.LABEL_PGOUSER], cluster)
+		publishScaleError(namespace, replica.ObjectMeta.Labels[config.LABEL_PGOUSER], cluster, replica)
 		return
 	}
 
@@ -586,8 +598,8 @@ func ScaleBase(clientset kubeapi.Interface, replica *crv1.Pgreplica, namespace s
 			Timestamp: time.Now(),
 			EventType: events.EventScaleCluster,
 		},
-		Clustername: cluster.Spec.UserLabels[config.LABEL_REPLICA_NAME],
-		Replicaname: cluster.Spec.UserLabels[config.LABEL_PG_CLUSTER],
+		Clustername: cluster.Name,
+		Replicaname: replica.Name,
 	}
 
 	if err = events.Publish(f); err != nil {
@@ -702,6 +714,31 @@ func UpdateBackrestS3(clientset kubeapi.Interface, cluster *crv1.Pgcluster, depl
 			}
 		}
 	}
+
+	return nil
+}
+
+// UpdateLabels updates the labels on the template to match those of the custom
+// labels
+func UpdateLabels(clientset kubeapi.Interface, cluster *crv1.Pgcluster, deployment *apps_v1.Deployment) error {
+	log.Debugf("update labels on [%s]", deployment.Name)
+
+	labels := map[string]string{}
+
+	// ...so, try to get all of the "system labels" copied over
+	for _, k := range systemLabels {
+		labels[k] = deployment.Spec.Template.ObjectMeta.Labels[k]
+	}
+
+	// now get the custom labels
+	for k, v := range util.GetCustomLabels(cluster) {
+		labels[k] = v
+	}
+
+	log.Debugf("new labels: %v", labels)
+
+	// set the labels on the deployment object
+	deployment.Spec.Template.ObjectMeta.SetLabels(labels)
 
 	return nil
 }
@@ -960,7 +997,7 @@ func createBootstrapBackRestSecret(clientset kubernetes.Interface,
 
 	// Create a copy of the secret for the cluster being recreated.  This ensures a copy of the
 	// required pgBackRest Secret is always present is the namespace of the cluster being created.
-	secretCopyName := fmt.Sprintf(BoostrapConfigPrefix, cluster.GetName(),
+	secretCopyName := fmt.Sprintf(util.BootstrapConfigPrefix, cluster.GetName(),
 		config.LABEL_BACKREST_REPO_SECRET)
 	secretCopy := &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -975,6 +1012,10 @@ func createBootstrapBackRestSecret(clientset kubernetes.Interface,
 			Namespace: cluster.GetNamespace(),
 		},
 		Data: restoreFromSecret.Data,
+	}
+
+	for k, v := range util.GetCustomLabels(cluster) {
+		secretCopy.ObjectMeta.Labels[k] = v
 	}
 
 	return clientset.CoreV1().Secrets(cluster.GetNamespace()).Create(ctx, secretCopy,
@@ -1013,7 +1054,7 @@ func createMissingUserSecret(clientset kubernetes.Interface, cluster *crv1.Pgclu
 
 	// great, now we can create the secret! if we can't, return an error
 	return util.CreateSecret(clientset, cluster.Spec.Name, secretName,
-		username, password, cluster.Namespace)
+		username, password, cluster.Namespace, util.GetCustomLabels(cluster))
 }
 
 // createMissingUserSecrets checks to see if there are secrets for the

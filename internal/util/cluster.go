@@ -47,6 +47,7 @@ type BackrestRepoConfig struct {
 	BackrestGCSKey      []byte
 	ClusterName         string
 	ClusterNamespace    string
+	CustomLabels        map[string]string
 	OperatorNamespace   string
 }
 
@@ -96,6 +97,10 @@ const (
 	// #nosec: G101
 	backRestRepoSecretKeySSHHostPrivateKey = "ssh_host_ed25519_key"
 )
+
+// BootstrapConfigPrefix is the format of the prefix used for the Secret containing the
+// pgBackRest configuration required to bootstrap a new cluster using a pgBackRest backup
+const BootstrapConfigPrefix = "%s-bootstrap-%s"
 
 const (
 	// SQLValidUntilAlways uses a special PostgreSQL value to ensure a password
@@ -164,6 +169,10 @@ func CreateBackrestRepoSecrets(clientset kubernetes.Interface,
 				},
 			},
 			Data: map[string][]byte{},
+		}
+
+		for k, v := range backrestRepoConfig.CustomLabels {
+			secret.ObjectMeta.Labels[k] = v
 		}
 	}
 
@@ -285,7 +294,7 @@ func CreateRMDataTask(clientset kubeapi.Interface, cluster *crv1.Pgcluster, repl
 				config.LABEL_IS_BACKUP:      strconv.FormatBool(isBackup),
 				config.LABEL_PG_CLUSTER:     cluster.Name,
 				config.LABEL_REPLICA_NAME:   replicaName,
-				config.LABEL_PGHA_SCOPE:     cluster.ObjectMeta.GetLabels()[config.LABEL_PGHA_SCOPE],
+				config.LABEL_PGHA_SCOPE:     cluster.Name,
 				config.LABEL_RM_TOLERATIONS: GetTolerations(cluster.Spec.Tolerations),
 			},
 			TaskType: crv1.PgtaskDeleteData,
@@ -354,6 +363,33 @@ func GeneratedPasswordValidUntilDays(configuredValidUntilDays string) int {
 	}
 
 	return validUntilDays
+}
+
+// GetCustomLabels gets a list of the custom labels that a user set so they can
+// be applied to any non-Postgres cluster instance objects. This removes some of
+// the "system labels" that get stuck in the "UserLabels" area.
+//
+// Do **not** use this for the Postgres instance Deployments. Some of those
+// labels are needed there.
+//
+// Returns a map.
+func GetCustomLabels(cluster *crv1.Pgcluster) map[string]string {
+	labels := map[string]string{}
+
+	if cluster.Spec.UserLabels == nil {
+		return labels
+	}
+
+	for k, v := range cluster.Spec.UserLabels {
+		switch k {
+		default:
+			labels[k] = v
+		case config.LABEL_WORKFLOW_ID, config.LABEL_PGO_VERSION:
+			continue
+		}
+	}
+
+	return labels
 }
 
 // GetPrimaryPod gets the Pod of the primary PostgreSQL instance. If somehow
@@ -514,7 +550,7 @@ func StopPostgreSQLInstance(clientset kubernetes.Interface, restconfig *rest.Con
 // The name must be a valid DNS 1123 value
 // THe prefix must be a valid DNS 1123 subdomain
 //
-// The value can be validated by machinery provided by Kubenretes
+// The value can be validated by machinery provided by Kubernetes
 //
 // Ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 func ValidateLabels(labels map[string]string) error {

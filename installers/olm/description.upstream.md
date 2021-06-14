@@ -65,6 +65,7 @@ If you plan to use AWS S3 to store backups, you can configure your environment t
 kubectl -n "$PGO_OPERATOR_NAMESPACE" create secret generic pgo-backrest-repo-config \
   --from-literal=aws-s3-key="<your-aws-s3-key>" \
   --from-literal=aws-s3-key-secret="<your-aws-s3-key-secret>"
+kubectl -n "$PGO_OPERATOR_NAMESPACE" label secret pgo-backrest-repo-config vendor=crunchydata
 ```
 
 ### Certificates (optional)
@@ -167,7 +168,7 @@ spec:
   annotations: {}
   ccpimage: crunchy-postgres-ha
   ccpimageprefix: ${cluster_image_prefix}
-  ccpimagetag: centos8-13.2-${PGO_VERSION}
+  ccpimagetag: centos8-13.3-${PGO_VERSION}
   clustername: ${pgo_cluster_name}
   database: ${pgo_cluster_name}
   exporterport: "9187"
